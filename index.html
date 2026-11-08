@@ -1,0 +1,968 @@
+<!DOCTYPE html>
+<html lang="zh-TW" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VotePulse - 免登入互動投票系統</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Canvas Confetti for Voting Celebration -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+
+    <!-- Firebase / Firestore SDK Integration -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Global Injection Handling
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'votepulse-app';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            apiKey: "demo-key",
+            authDomain: "demo.firebaseapp.com",
+            projectId: "demo-project",
+            storageBucket: "demo.appspot.com",
+            messagingSenderId: "123456789",
+            appId: "1:123456789:web:demo"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        window.db = db;
+        window.appId = appId;
+        window.cloudEnabled = true;
+
+        // Firebase Auth Initialization
+        async function initAuth() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                console.log("Cloud Auth initialized.");
+                window.listenToCloudPoll();
+            } catch (err) {
+                console.warn("Cloud auth failed or demo mode:", err);
+                window.cloudEnabled = false;
+                window.renderActivePoll();
+            }
+        }
+
+        window.listenToCloudPoll = function() {
+            if (!window.cloudEnabled) return;
+            const pollDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'polls', 'active_poll');
+            
+            onSnapshot(pollDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    window.currentPoll = docSnap.data();
+                } else {
+                    // Initialize default poll to cloud if none exists
+                    setDoc(pollDocRef, window.defaultPoll);
+                    window.currentPoll = window.defaultPoll;
+                }
+                window.renderActivePoll();
+            }, (error) => {
+                console.error("Firestore onSnapshot Error:", error);
+            });
+        };
+
+        window.savePollToCloud = async function(pollData) {
+            if (!window.cloudEnabled) {
+                localStorage.setItem('votepulse_active_poll', JSON.stringify(pollData));
+                return;
+            }
+            try {
+                const pollDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'polls', 'active_poll');
+                await setDoc(pollDocRef, pollData);
+            } catch(e) {
+                console.error("Failed to save to cloud:", e);
+                showToast("雲端同步失敗，改存於本機", "error");
+            }
+        };
+
+        initAuth();
+    </script>
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#eef2ff',
+                            100: '#e0e7ff',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            700: '#4338ca',
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.05);
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: rgba(99, 102, 241, 0.3);
+            border-radius: 3px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: rgba(99, 102, 241, 0.6);
+        }
+        @keyframes pulse-subtle {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .animate-pulse-subtle {
+            animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-sans min-h-full flex flex-col transition-colors duration-200">
+
+    <!-- Navbar -->
+    <header class="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-30 shadow-sm">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <!-- Logo -->
+                <div class="flex items-center gap-3">
+                    <div class="bg-brand-600 text-white p-2.5 rounded-xl shadow-md shadow-brand-500/20 flex items-center justify-center">
+                        <i class="fa-solid font-bold fa-check-to-slot text-xl"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-xl font-bold bg-gradient-to-r from-brand-600 to-violet-600 bg-clip-text text-transparent">VotePulse</h1>
+                        <p class="text-xs text-slate-500 dark:text-slate-400">免登入裝置識別投票系統</p>
+                    </div>
+                </div>
+
+                <!-- Right Actions & Identity Status -->
+                <div class="flex items-center gap-3">
+                    <!-- Identity Badge -->
+                    <button id="open-profile-btn" onclick="openProfileModal()" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-100 dark:bg-slate-700/60 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs sm:text-sm font-medium transition">
+                        <span id="user-avatar-badge" class="w-6 h-6 rounded-full bg-brand-500 text-white flex items-center justify-center text-xs font-bold">?</span>
+                        <span id="user-nickname-display" class="truncate max-w-[100px] sm:max-w-[140px]">載入中...</span>
+                        <i class="fa-solid fa-gear text-slate-400 text-xs"></i>
+                    </button>
+
+                    <!-- Nav Tabs -->
+                    <div class="bg-slate-100 dark:bg-slate-700/50 p-1 rounded-xl flex items-center text-xs font-semibold">
+                        <button id="tab-vote-btn" onclick="switchTab('vote')" class="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 text-brand-600 dark:text-brand-400 shadow-sm transition">
+                            <i class="fa-solid fa-vote-yea mr-1"></i> 投票頁面
+                        </button>
+                        <button id="tab-admin-btn" onclick="switchTab('admin')" class="px-3 py-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition">
+                            <i class="fa-solid fa-plus-circle mr-1"></i> 發起新投票
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="flex-grow max-w-5xl w-full mx-auto px-4 sm:px-6 py-8">
+        
+        <!-- MAC / Device Fingerprint Banner Info -->
+        <div class="mb-6 p-4 rounded-2xl bg-indigo-50/80 dark:bg-slate-800/80 border border-indigo-100 dark:border-slate-700 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs sm:text-sm shadow-sm">
+            <div class="flex items-center gap-3 text-indigo-900 dark:text-indigo-200">
+                <div class="p-2 rounded-lg bg-indigo-100 dark:bg-slate-700 text-brand-600 dark:text-brand-400 shrink-0">
+                    <i class="fa-solid fa-shield-halved text-base"></i>
+                </div>
+                <div>
+                    <span class="font-semibold">免帳號安全識別：</span>
+                    <span class="text-slate-600 dark:text-slate-300">瀏覽器無法存取實體 MAC 地址，本系統使用「裝置數位指紋 (Fingerprint ID)」綁定此瀏覽器，實現免登入與防重複投票。</span>
+                </div>
+            </div>
+            <button onclick="toggleFingerprintDetails()" class="shrink-0 text-brand-600 dark:text-brand-400 font-semibold hover:underline text-xs">
+                檢視我的裝置識別碼
+            </button>
+        </div>
+
+        <!-- Fingerprint Details Box (Hidden by default) -->
+        <div id="fingerprint-modal" class="hidden mb-6 p-4 rounded-xl bg-slate-900 text-slate-300 font-mono text-xs border border-slate-700 shadow-inner">
+            <div class="flex justify-between items-center mb-2">
+                <span class="text-brand-400 font-bold"><i class="fa-solid fa-fingerprint mr-1"></i> Device Signature Details</span>
+                <button onclick="toggleFingerprintDetails()" class="text-slate-400 hover:text-white">&times;</button>
+            </div>
+            <div class="space-y-1">
+                <div><span class="text-slate-500">Unique Fingerprint UUID:</span> <span id="fp-uuid" class="text-emerald-400 font-semibold">--</span></div>
+                <div><span class="text-slate-500">Browser User-Agent:</span> <span id="fp-ua" class="break-all text-slate-400">--</span></div>
+                <div><span class="text-slate-500">Screen Resolution & Color:</span> <span id="fp-screen" class="text-slate-400">--</span></div>
+                <div><span class="text-slate-500">Timezone / Language:</span> <span id="fp-env" class="text-slate-400">--</span></div>
+            </div>
+        </div>
+
+        <!-- TAB 1: VOTER VIEW -->
+        <section id="view-voter" class="space-y-6">
+            <!-- Active Poll Container -->
+            <div id="poll-container" class="space-y-6">
+                <!-- Dynamically populated poll details -->
+            </div>
+        </section>
+
+        <!-- TAB 2: ADMIN / CREATE POLL VIEW -->
+        <section id="view-admin" class="hidden space-y-6">
+            <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 sm:p-8 shadow-sm border border-slate-200 dark:border-slate-700">
+                <div class="border-b border-slate-100 dark:border-slate-700 pb-4 mb-6">
+                    <h2 class="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                        <i class="fa-solid fa-pen-to-square text-brand-600"></i> 發起全新的問卷投票
+                    </h2>
+                    <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">自訂問題、單選或複選題目，建立後即可供全體使用者線上投票。</p>
+                </div>
+
+                <form id="create-poll-form" onsubmit="handleCreatePoll(event)" class="space-y-6">
+                    <!-- Poll General Info -->
+                    <div class="grid grid-cols-1 gap-4">
+                        <div>
+                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">投票主題 / 活動名稱 *</label>
+                            <input type="text" id="poll-title" required placeholder="例如：2026 團隊聚餐地點與活動偏好調查" 
+                                class="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">說明描述 (選填)</label>
+                            <textarea id="poll-desc" rows="2" placeholder="請大家在週五前完成投票，這將決定我們這個月聚餐地點！"
+                                class="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:outline-none"></textarea>
+                        </div>
+                    </div>
+
+                    <!-- Questions Container -->
+                    <div class="space-y-4">
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-base font-bold text-slate-800 dark:text-slate-200">問題清單</h3>
+                            <button type="button" onclick="addQuestionField()" class="text-xs sm:text-sm text-brand-600 hover:text-brand-700 dark:text-brand-400 font-semibold flex items-center gap-1 bg-brand-50 dark:bg-slate-700 px-3 py-1.5 rounded-lg">
+                                <i class="fa-solid fa-plus"></i> 新增題目
+                            </button>
+                        </div>
+
+                        <div id="questions-builder" class="space-y-4">
+                            <!-- Dynamic Question Blocks Go Here -->
+                        </div>
+                    </div>
+
+                    <!-- Submit Actions -->
+                    <div class="pt-4 border-t border-slate-100 dark:border-slate-700 flex justify-end gap-3">
+                        <button type="button" onclick="resetFormToSample()" class="px-5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 font-medium transition text-sm">
+                            載入預設範例
+                        </button>
+                        <button type="submit" class="px-6 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-semibold shadow-md shadow-brand-500/20 transition text-sm">
+                            <i class="fa-solid fa-rocket mr-1.5"></i> 發布並切換至投票
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </section>
+    </main>
+
+    <!-- NICKNAME & PROFILE MODAL -->
+    <div id="profile-modal" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200 dark:border-slate-700 space-y-5 animate-in fade-in zoom-in duration-200">
+            <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-700 pb-3">
+                <h3 class="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <i class="fa-solid fa-user-gear text-brand-600"></i> 設定您的投票身份
+                </h3>
+                <button onclick="closeProfileModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-white text-lg">&times;</button>
+            </div>
+
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">投票暱稱</label>
+                    <div class="flex gap-2">
+                        <input type="text" id="modal-nickname-input" class="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:outline-none">
+                        <button type="button" onclick="generateRandomNickname()" class="shrink-0 px-3 py-2 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1" title="隨機產生暱稱">
+                            <i class="fa-solid fa-shuffle"></i> 隨機
+                        </button>
+                    </div>
+                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">此暱稱將隨附在投票結果紀錄中。</p>
+                </div>
+
+                <div class="p-3.5 bg-slate-50 dark:bg-slate-900 rounded-xl text-xs space-y-1.5 border border-slate-200/60 dark:border-slate-700">
+                    <div class="font-semibold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                        <span>裝置識別碼狀態</span>
+                        <span class="text-emerald-500 font-bold flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span> 已連結裝置
+                        </span>
+                    </div>
+                    <p class="text-slate-500 dark:text-slate-400 break-all" id="profile-modal-fp">FP-ID: --</p>
+                </div>
+            </div>
+
+            <div class="flex justify-end gap-2 pt-2">
+                <button type="button" onclick="closeProfileModal()" class="px-4 py-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 text-sm font-medium">
+                    取消
+                </button>
+                <button type="button" onclick="saveProfile()" class="px-5 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold shadow-md">
+                    儲存設定
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Toast Container -->
+    <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+    <!-- MAIN JAVASCRIPT LOGIC -->
+    <script>
+        // --- DATA MODELS & INITIAL STATE ---
+        const LOCAL_STORAGE_KEY_POLL = 'votepulse_active_poll';
+        const LOCAL_STORAGE_KEY_VOTES = 'votepulse_user_votes';
+        const LOCAL_STORAGE_KEY_USER = 'votepulse_user_profile';
+
+        // Sample Poll Template
+        const defaultPoll = {
+            id: 'poll_default_2026',
+            title: '2026 春季團隊聚餐地點與日程投票',
+            description: '請大家選出最想吃的餐廳類型與合適時間，每位同仁皆可以免登入投票一次！',
+            createdAt: new Date().toISOString(),
+            questions: [
+                {
+                    id: 'q1',
+                    text: '1. 您偏好的聚餐料理種類？(單選)',
+                    type: 'single', // single or multiple
+                    options: [
+                        { id: 'opt1_1', text: '日式頂級和牛燒肉' },
+                        { id: 'opt1_2', text: '海鮮百匯自助 Buffet' },
+                        { id: 'opt1_3', text: '義式窯烤披薩與酒館' },
+                        { id: 'opt1_4', text: '泰式新派酸辣料理' }
+                    ]
+                },
+                {
+                    id: 'q2',
+                    text: '2. 方便參加的時間段？(可複選)',
+                    type: 'multiple',
+                    options: [
+                        { id: 'opt2_1', text: '週五 晚上 18:30' },
+                        { id: 'opt2_2', text: '週六 中午 12:00' },
+                        { id: 'opt2_3', text: '週六 晚上 18:00' }
+                    ]
+                }
+            ],
+            // Format: { [fingerprintId]: { nickname: string, votedAt: string, selections: { [questionId]: [optionIds] } } }
+            votes: {
+                'demo_fp_991': {
+                    nickname: '快樂小鳥 #12',
+                    votedAt: new Date(Date.now() - 3600000 * 5).toISOString(),
+                    selections: { q1: ['opt1_1'], q2: ['opt2_1', 'opt2_3'] }
+                },
+                'demo_fp_992': {
+                    nickname: '極客野貓 #88',
+                    votedAt: new Date(Date.now() - 3600000 * 2).toISOString(),
+                    selections: { q1: ['opt1_2'], q2: ['opt2_1'] }
+                }
+            }
+        };
+
+        // App State
+        let currentPoll = null;
+        let userProfile = {
+            nickname: '',
+            fingerprintId: ''
+        };
+        let activeTab = 'vote'; // 'vote' | 'admin'
+
+        // --- DEVICE FINGERPRINTING LOGIC ---
+        function generateDeviceFingerprint() {
+            let fp = localStorage.getItem('votepulse_fp_id');
+            if (!fp) {
+                // Synthesize hardware/browser traits
+                const screenStr = `${screen.width}x${screen.height}x${screen.colorDepth}`;
+                const ua = navigator.userAgent;
+                const lang = navigator.language;
+                const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                
+                // Simple hash generator
+                let hash = 0;
+                const str = `${screenStr}|${ua}|${lang}|${tz}`;
+                for (let i = 0; i < str.length; i++) {
+                    const char = str.charCodeAt(i);
+                    hash = ((hash << 5) - hash) + char;
+                    hash |= 0;
+                }
+                
+                const randomUUID = crypto.randomUUID ? crypto.randomUUID().substring(0, 8) : Math.random().toString(36).substring(2, 10);
+                fp = `FP-${Math.abs(hash).toString(16).toUpperCase()}-${randomUUID}`;
+                localStorage.setItem('votepulse_fp_id', fp);
+            }
+            return fp;
+        }
+
+        // --- RANDOM NICKNAME GENERATOR ---
+        const ADJECTIVES = ['聰明的', '快樂的', '勇猛的', '神秘的', '靈巧的', '友善的', '極客', '熱情', '文靜'];
+        const ANIMALS = ['小鳥', '企鵝', '海豚', '野貓', '柴犬', '水獺', '熊貓', '樹懶', '狐狸'];
+        function getRandomNickname() {
+            const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+            const anim = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
+            const num = Math.floor(Math.random() * 90) + 10;
+            return `${adj}${anim} #${num}`;
+        }
+
+        // --- INITIALIZATION ---
+        window.onload = function() {
+            // Load or initialize fingerprint
+            const fpId = generateDeviceFingerprint();
+            
+            // Load user profile
+            const savedProfile = localStorage.getItem(LOCAL_STORAGE_KEY_USER);
+            if (savedProfile) {
+                userProfile = JSON.parse(savedProfile);
+                userProfile.fingerprintId = fpId; // ensure synced
+            } else {
+                userProfile = {
+                    nickname: getRandomNickname(),
+                    fingerprintId: fpId
+                };
+                localStorage.setItem(LOCAL_STORAGE_KEY_USER, JSON.stringify(userProfile));
+            }
+
+            // Load active poll
+            const savedPoll = localStorage.getItem(LOCAL_STORAGE_KEY_POLL);
+            if (savedPoll) {
+                try {
+                    currentPoll = JSON.parse(savedPoll);
+                } catch(e) {
+                    currentPoll = defaultPoll;
+                }
+            } else {
+                currentPoll = defaultPoll;
+                savePollState();
+            }
+
+            // Update UI elements
+            updateHeaderProfileUI();
+            updateFingerprintDebugUI();
+            renderActivePoll();
+            initAdminBuilderDefault();
+        };
+
+        function savePollState() {
+            if (window.savePollToCloud) {
+                window.savePollToCloud(currentPoll);
+            } else {
+                localStorage.setItem(LOCAL_STORAGE_KEY_POLL, JSON.stringify(currentPoll));
+            }
+        }
+
+        // --- UI TOGGLES & NAVIGATION ---
+        function switchTab(tab) {
+            activeTab = tab;
+            const voterSec = document.getElementById('view-voter');
+            const adminSec = document.getElementById('view-admin');
+            const btnVote = document.getElementById('tab-vote-btn');
+            const btnAdmin = document.getElementById('tab-admin-btn');
+
+            if (tab === 'vote') {
+                voterSec.classList.remove('hidden');
+                adminSec.classList.add('hidden');
+                btnVote.className = "px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 text-brand-600 dark:text-brand-400 shadow-sm transition";
+                btnAdmin.className = "px-3 py-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition";
+                renderActivePoll();
+            } else {
+                voterSec.classList.add('hidden');
+                adminSec.classList.remove('hidden');
+                btnAdmin.className = "px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 text-brand-600 dark:text-brand-400 shadow-sm transition";
+                btnVote.className = "px-3 py-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition";
+            }
+        }
+
+        function updateHeaderProfileUI() {
+            const nickDisplay = document.getElementById('user-nickname-display');
+            const avatarBadge = document.getElementById('user-avatar-badge');
+            nickDisplay.textContent = userProfile.nickname;
+            avatarBadge.textContent = userProfile.nickname ? userProfile.nickname.charAt(0).toUpperCase() : '?';
+        }
+
+        function updateFingerprintDebugUI() {
+            document.getElementById('fp-uuid').textContent = userProfile.fingerprintId;
+            document.getElementById('fp-ua').textContent = navigator.userAgent;
+            document.getElementById('fp-screen').textContent = `${screen.width} x ${screen.height} (${screen.colorDepth}-bit color)`;
+            document.getElementById('fp-env').textContent = `${Intl.DateTimeFormat().resolvedOptions().timeZone} / ${navigator.language}`;
+            document.getElementById('profile-modal-fp').textContent = `FP-ID: ${userProfile.fingerprintId}`;
+        }
+
+        function toggleFingerprintDetails() {
+            const modal = document.getElementById('fingerprint-modal');
+            modal.classList.toggle('hidden');
+        }
+
+        // Modal Handler
+        function openProfileModal() {
+            document.getElementById('modal-nickname-input').value = userProfile.nickname;
+            document.getElementById('profile-modal').classList.remove('hidden');
+        }
+
+        function closeProfileModal() {
+            document.getElementById('profile-modal').classList.add('hidden');
+        }
+
+        function generateRandomNickname() {
+            document.getElementById('modal-nickname-input').value = getRandomNickname();
+        }
+
+        function saveProfile() {
+            const newName = document.getElementById('modal-nickname-input').value.trim();
+            if (!newName) {
+                showToast('請輸入有效暱稱！', 'error');
+                return;
+            }
+            userProfile.nickname = newName;
+            localStorage.setItem(LOCAL_STORAGE_KEY_USER, JSON.stringify(userProfile));
+            updateHeaderProfileUI();
+            closeProfileModal();
+            showToast('暱稱已順利更新！', 'success');
+
+            // If user already voted, update nickname in record
+            if (currentPoll && currentPoll.votes[userProfile.fingerprintId]) {
+                currentPoll.votes[userProfile.fingerprintId].nickname = newName;
+                savePollState();
+                renderActivePoll();
+            }
+        }
+
+        // --- RENDER POLL VIEW ---
+        function renderActivePoll() {
+            const container = document.getElementById('poll-container');
+            if (!currentPoll) {
+                container.innerHTML = `<div class="bg-white dark:bg-slate-800 p-8 rounded-2xl text-center text-slate-500">尚無進行中的投票活動。</div>`;
+                return;
+            }
+
+            const hasVoted = Boolean(currentPoll.votes[userProfile.fingerprintId]);
+            const userVoteRecord = currentPoll.votes[userProfile.fingerprintId];
+            const totalVotersCount = Object.keys(currentPoll.votes).length;
+
+            let html = `
+                <!-- Poll Title Card -->
+                <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 sm:p-8 shadow-sm border border-slate-200 dark:border-slate-700 relative overflow-hidden">
+                    <div class="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-brand-500/10 to-violet-500/0 rounded-bl-full pointer-events-none"></div>
+                    
+                    <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${hasVoted ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'}">
+                            <span class="w-2 h-2 rounded-full ${hasVoted ? 'bg-emerald-500' : 'bg-amber-500 animate-ping'}"></span>
+                            ${hasVoted ? '您已完成投票' : '等待您的投票'}
+                        </span>
+                        
+                        <div class="flex items-center gap-4 text-xs font-medium text-slate-500 dark:text-slate-400">
+                            <span><i class="fa-solid fa-users text-brand-500 mr-1"></i> 已有 <strong>${totalVotersCount}</strong> 人參與</span>
+                            <span><i class="fa-regular fa-clock mr-1"></i> ${new Date(currentPoll.createdAt).toLocaleDateString()}</span>
+                        </div>
+                    </div>
+
+                    <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white leading-tight mb-2">
+                        ${escapeHtml(currentPoll.title)}
+                    </h2>
+                    ${currentPoll.description ? `<p class="text-slate-600 dark:text-slate-300 text-sm sm:text-base mb-4">${escapeHtml(currentPoll.description)}</p>` : ''}
+                </div>
+            `;
+
+            if (!hasVoted) {
+                // --- VOTING FORM INTERFACE ---
+                html += `
+                    <form id="voter-submission-form" onsubmit="handleVoteSubmit(event)" class="space-y-6">
+                        ${currentPoll.questions.map((q, idx) => `
+                            <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-700 space-y-4">
+                                <div class="flex items-center justify-between">
+                                    <h3 class="text-lg font-bold text-slate-900 dark:text-white">
+                                        ${escapeHtml(q.text)}
+                                    </h3>
+                                    <span class="text-xs px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-700 font-medium text-slate-600 dark:text-slate-300">
+                                        ${q.type === 'single' ? '單選' : '複選'}
+                                    </span>
+                                </div>
+
+                                <div class="space-y-2.5">
+                                    ${q.options.map(opt => `
+                                        <label class="flex items-center p-3.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-brand-500 dark:hover:border-brand-500 hover:bg-slate-50/80 dark:hover:bg-slate-700/40 cursor-pointer transition">
+                                            <input type="${q.type === 'single' ? 'radio' : 'checkbox'}" 
+                                                name="q_${q.id}" 
+                                                value="${opt.id}"
+                                                class="w-5 h-5 text-brand-600 border-slate-300 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-900">
+                                            <span class="ml-3 text-slate-800 dark:text-slate-200 font-medium text-sm sm:text-base">${escapeHtml(opt.text)}</span>
+                                        </label>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        `).join('')}
+
+                        <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-4">
+                            <div class="flex items-center gap-3">
+                                <span class="text-sm text-slate-600 dark:text-slate-400">目前投票身份：</span>
+                                <button type="button" onclick="openProfileModal()" class="font-bold text-brand-600 dark:text-brand-400 hover:underline flex items-center gap-1">
+                                    <i class="fa-solid fa-user-circle"></i> ${escapeHtml(userProfile.nickname)}
+                                    <i class="fa-solid fa-pen text-xs ml-0.5"></i>
+                                </button>
+                            </div>
+
+                            <button type="submit" class="w-full sm:w-auto px-8 py-3 rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 hover:from-brand-700 hover:to-violet-700 text-white font-bold shadow-lg shadow-brand-500/25 transition">
+                                <i class="fa-solid fa-paper-plane mr-2"></i> 送出投票結果
+                            </button>
+                        </div>
+                    </form>
+                `;
+            } else {
+                // --- RESULTS DISPLAY INTERFACE ---
+                const stats = calculateResults(currentPoll);
+
+                html += `
+                    <div class="space-y-6">
+                        <!-- Questions Results Cards -->
+                        ${currentPoll.questions.map(q => {
+                            const qStat = stats[q.id] || { totalVotes: 0, options: {} };
+                            return `
+                                <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-700 space-y-5">
+                                    <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-700 pb-3">
+                                        <h3 class="text-lg font-bold text-slate-900 dark:text-white">
+                                            ${escapeHtml(q.text)}
+                                        </h3>
+                                        <span class="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                                            此題共 ${qStat.totalVotes} 票
+                                        </span>
+                                    </div>
+
+                                    <div class="space-y-4">
+                                        ${q.options.map(opt => {
+                                            const count = qStat.options[opt.id] || 0;
+                                            const pct = qStat.totalVotes > 0 ? Math.round((count / qStat.totalVotes) * 100) : 0;
+                                            const isSelectedByUser = userVoteRecord.selections[q.id]?.includes(opt.id);
+
+                                            return `
+                                                <div class="space-y-1.5">
+                                                    <div class="flex justify-between text-sm font-semibold">
+                                                        <span class="flex items-center gap-2 ${isSelectedByUser ? 'text-brand-600 dark:text-brand-400 font-bold' : 'text-slate-700 dark:text-slate-300'}">
+                                                            ${escapeHtml(opt.text)}
+                                                            ${isSelectedByUser ? '<span class="text-xs bg-brand-100 dark:bg-brand-950 text-brand-700 dark:text-brand-300 px-2 py-0.5 rounded-full font-normal"><i class="fa-solid fa-check mr-0.5"></i> 您的選擇</span>' : ''}
+                                                        </span>
+                                                        <span class="text-slate-500 dark:text-slate-400 text-xs">${count} 票 (${pct}%)</span>
+                                                    </div>
+                                                    
+                                                    <!-- Progress Bar -->
+                                                    <div class="w-full h-3 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                                                        <div class="h-full ${isSelectedByUser ? 'bg-gradient-to-r from-brand-500 to-violet-500' : 'bg-slate-400 dark:bg-slate-500'} transition-all duration-700 ease-out rounded-full" 
+                                                             style="width: ${pct}%"></div>
+                                                    </div>
+                                                </div>
+                                            `;
+                                        }).join('')}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+
+                        <!-- Voter Log / Action Box -->
+                        <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-700 space-y-4">
+                            <div class="flex items-center justify-between">
+                                <h4 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                                    <i class="fa-solid fa-list-check text-brand-500"></i> 最近投票紀錄
+                                </h4>
+                                <button onclick="resetMyVote()" class="text-xs text-rose-600 hover:text-rose-700 dark:text-rose-400 font-semibold flex items-center gap-1">
+                                    <i class="fa-solid fa-rotate-left"></i> 重置我的這筆投票
+                                </button>
+                            </div>
+
+                            <div class="max-h-48 overflow-y-auto custom-scrollbar space-y-2 pr-1 text-xs">
+                                ${Object.entries(currentPoll.votes).map(([fp, vote]) => `
+                                    <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-700/50">
+                                        <div class="flex items-center gap-2">
+                                            <span class="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-600 text-slate-700 dark:text-slate-200 font-bold flex items-center justify-center text-[10px]">
+                                                ${vote.nickname ? vote.nickname.charAt(0).toUpperCase() : '?'}
+                                            </span>
+                                            <span class="font-medium text-slate-800 dark:text-slate-200">
+                                                ${escapeHtml(vote.nickname)}
+                                                ${fp === userProfile.fingerprintId ? ' <span class="text-brand-600 font-bold">(您)</span>' : ''}
+                                            </span>
+                                        </div>
+                                        <span class="text-slate-400">${new Date(vote.votedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            container.innerHTML = html;
+        }
+
+        // --- CALCULATE VOTE STATISTICS ---
+        function calculateResults(poll) {
+            const stats = {};
+            poll.questions.forEach(q => {
+                stats[q.id] = { totalVotes: 0, options: {} };
+                q.options.forEach(opt => {
+                    stats[q.id].options[opt.id] = 0;
+                });
+            });
+
+            Object.values(poll.votes).forEach(vote => {
+                if (!vote.selections) return;
+                Object.entries(vote.selections).forEach(([qId, selectedOpts]) => {
+                    if (stats[qId]) {
+                        stats[qId].totalVotes += 1;
+                        selectedOpts.forEach(optId => {
+                            if (stats[qId].options[optId] !== undefined) {
+                                stats[qId].options[optId] += 1;
+                            }
+                        });
+                    }
+                });
+            });
+
+            return stats;
+        }
+
+        // --- HANDLE VOTE SUBMISSION ---
+        function handleVoteSubmit(e) {
+            e.preventDefault();
+            const form = e.target;
+            const selections = {};
+            let allAnswered = true;
+
+            currentPoll.questions.forEach(q => {
+                const checkedInputs = form.querySelectorAll(`input[name="q_${q.id}"]:checked`);
+                if (checkedInputs.length === 0) {
+                    allAnswered = false;
+                } else {
+                    selections[q.id] = Array.from(checkedInputs).map(inp => inp.value);
+                }
+            });
+
+            if (!allAnswered) {
+                showToast('請完成所有問題後再行送出！', 'error');
+                return;
+            }
+
+            // Record vote
+            currentPoll.votes[userProfile.fingerprintId] = {
+                nickname: userProfile.nickname,
+                votedAt: new Date().toISOString(),
+                selections: selections
+            };
+
+            savePollState();
+            renderActivePoll();
+            showToast('投票成功！感謝您的參與。', 'success');
+
+            // Trigger Confetti Celebration
+            if (typeof confetti === 'function') {
+                confetti({
+                    particleCount: 80,
+                    spread: 70,
+                    origin: { y: 0.6 }
+                });
+            }
+        }
+
+        function resetMyVote() {
+            if (currentPoll && currentPoll.votes[userProfile.fingerprintId]) {
+                delete currentPoll.votes[userProfile.fingerprintId];
+                savePollState();
+                renderActivePoll();
+                showToast('已消除您的投票狀態，您可以重新投票。', 'info');
+            }
+        }
+
+        // --- ADMIN / POLL CREATOR BUILDER LOGIC ---
+        let qCount = 0;
+
+        function initAdminBuilderDefault() {
+            const builder = document.getElementById('questions-builder');
+            builder.innerHTML = '';
+            qCount = 0;
+
+            // Add sample questions
+            addQuestionField('您最希望下半年的員工旅遊舉辦在哪裡？', 'single', ['日本關西自由行', '泰國海島渡假村', '花東精緻包棟民宿']);
+            addQuestionField('您偏好的出發月份？', 'multiple', ['9 月中旬', '10 月初秋', '11 月楓葉季']);
+        }
+
+        function addQuestionField(defaultTitle = '', defaultType = 'single', defaultOptions = ['', '']) {
+            qCount++;
+            const qId = `q_build_${qCount}`;
+            const container = document.getElementById('questions-builder');
+
+            const card = document.createElement('div');
+            card.className = "p-5 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 space-y-4 relative group";
+            card.id = `q_card_${qId}`;
+
+            card.innerHTML = `
+                <div class="flex items-center justify-between gap-3">
+                    <div class="flex-grow flex items-center gap-2">
+                        <span class="font-bold text-slate-400 text-sm">#${qCount}</span>
+                        <input type="text" required value="${escapeHtml(defaultTitle)}" placeholder="輸入題目內容..." 
+                            class="q-title-input w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-white text-sm font-semibold focus:ring-2 focus:ring-brand-500 focus:outline-none">
+                    </div>
+
+                    <select class="q-type-select px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-white text-xs font-semibold focus:outline-none">
+                        <option value="single" ${defaultType === 'single' ? 'selected' : ''}>單選題</option>
+                        <option value="multiple" ${defaultType === 'multiple' ? 'selected' : ''}>複選題</option>
+                    </select>
+
+                    <button type="button" onclick="removeQuestionField('q_card_${qId}')" class="text-slate-400 hover:text-rose-500 p-1.5 transition">
+                        <i class="fa-solid fa-trash-can"></i>
+                    </button>
+                </div>
+
+                <div class="space-y-2 pl-4 border-l-2 border-slate-200 dark:border-slate-700">
+                    <label class="block text-xs font-semibold text-slate-500 dark:text-slate-400">選項清單</label>
+                    <div class="options-container space-y-2">
+                        ${defaultOptions.map(opt => createOptionInputHtml(opt)).join('')}
+                    </div>
+                    <button type="button" onclick="addOptionInput('q_card_${qId}')" class="mt-2 text-xs text-brand-600 dark:text-brand-400 font-semibold hover:underline flex items-center gap-1">
+                        <i class="fa-solid fa-plus text-[10px]"></i> 新增選項
+                    </button>
+                </div>
+            `;
+
+            container.appendChild(card);
+        }
+
+        function createOptionInputHtml(value = '') {
+            return `
+                <div class="flex items-center gap-2 opt-row">
+                    <i class="fa-solid fa-circle-dot text-slate-300 dark:text-slate-600 text-xs"></i>
+                    <input type="text" required value="${escapeHtml(value)}" placeholder="選項內容" 
+                        class="opt-input w-full px-3 py-1 rounded-lg border border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-white text-xs focus:ring-1 focus:ring-brand-500 focus:outline-none">
+                    <button type="button" onclick="this.parentElement.remove()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs px-1">
+                        &times;
+                    </button>
+                </div>
+            `;
+        }
+
+        function addOptionInput(cardId) {
+            const card = document.getElementById(cardId);
+            const container = card.querySelector('.options-container');
+            const div = document.createElement('div');
+            div.innerHTML = createOptionInputHtml('');
+            container.appendChild(div.firstElementChild);
+        }
+
+        function removeQuestionField(cardId) {
+            const container = document.getElementById('questions-builder');
+            if (container.children.length <= 1) {
+                showToast('問卷至少需要包含一個題目！', 'error');
+                return;
+            }
+            document.getElementById(cardId).remove();
+        }
+
+        function resetFormToSample() {
+            document.getElementById('poll-title').value = "2026 春季團隊聚餐地點與日程投票";
+            document.getElementById('poll-desc').value = "請大家選出最想吃的餐廳類型與合適時間，每位同仁皆可以免登入投票一次！";
+            initAdminBuilderDefault();
+            showToast('已恢復範例題目內容', 'info');
+        }
+
+        function handleCreatePoll(e) {
+            e.preventDefault();
+            const title = document.getElementById('poll-title').value.trim();
+            const desc = document.getElementById('poll-desc').value.trim();
+            const qCards = document.querySelectorAll('#questions-builder > div');
+
+            if (qCards.length === 0) {
+                showToast('請新增至少一個題目！', 'error');
+                return;
+            }
+
+            const questions = [];
+            let isValid = true;
+
+            qCards.forEach((card, idx) => {
+                const qTitle = card.querySelector('.q-title-input').value.trim();
+                const qType = card.querySelector('.q-type-select').value;
+                const optInputs = card.querySelectorAll('.opt-input');
+
+                const options = [];
+                optInputs.forEach((optInp, optIdx) => {
+                    const optText = optInp.value.trim();
+                    if (optText) {
+                        options.push({
+                            id: `opt_${idx + 1}_${optIdx + 1}`,
+                            text: optText
+                        });
+                    }
+                });
+
+                if (!qTitle || options.length < 2) {
+                    isValid = false;
+                } else {
+                    questions.push({
+                        id: `q_${idx + 1}`,
+                        text: `${idx + 1}. ${qTitle}`,
+                        type: qType,
+                        options: options
+                    });
+                }
+            });
+
+            if (!isValid) {
+                showToast('每個問題皆需要有題目名稱與至少 2 個有效選項！', 'error');
+                return;
+            }
+
+            // Construct new Poll object
+            currentPoll = {
+                id: `poll_${Date.now()}`,
+                title: title,
+                description: desc,
+                createdAt: new Date().toISOString(),
+                questions: questions,
+                votes: {}
+            };
+
+            savePollState();
+            showToast('新投票建立成功！已自動切換', 'success');
+            switchTab('vote');
+        }
+
+        // --- UTILITY FUNCTIONS ---
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            
+            let bgClass = 'bg-slate-800 text-white';
+            let icon = 'fa-circle-info';
+            if (type === 'success') {
+                bgClass = 'bg-emerald-600 text-white';
+                icon = 'fa-circle-check';
+            } else if (type === 'error') {
+                bgClass = 'bg-rose-600 text-white';
+                icon = 'fa-triangle-exclamation';
+            }
+
+            toast.className = `pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-lg ${bgClass} text-sm font-medium animate-in slide-in-from-bottom-5 duration-300`;
+            toast.innerHTML = `<i class="fa-solid ${icon}"></i> <span>${escapeHtml(message)}</span>`;
+
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'transition-opacity', 'duration-300');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
